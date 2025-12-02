@@ -5,7 +5,11 @@ from google.adk import Agent, Runner
 from google.adk.tools import AgentTool, FunctionTool
 from google.adk.sessions import InMemorySessionService
 from .tools import rag_query
-from .prompts import return_instructions_root
+from .prompts import (
+    return_instructions_rag_agent, 
+    return_instructions_database_agent,
+    return_instructions_root_agent
+)
 import os
 import sys
 from dotenv import load_dotenv
@@ -22,13 +26,6 @@ retry_config = types.HttpRetryOptions(
     http_status_codes=[429, 500, 503, 504],  # Retry on these HTTP errors
 )
 
-root_agent = LlmAgent(
-    model=Gemini(model="gemini-2.5-flash-lite", retry_options=retry_config),
-    name='rag_agent',
-    instruction=return_instructions_root(),
-    tools=[
-        rag_query,
-    ],)
 
 
 APP_NAME = "agents"  # Application - debe coincidir con el directorio
@@ -131,68 +128,29 @@ def analyze_database(query: str = ""):
 
 # Crear la herramienta
 database_analysis_tool = FunctionTool(func=analyze_database)
-
+# Create Rag Agent
+rag_agent = LlmAgent(
+    model=Gemini(model=MODEL_NAME, retry_options=retry_config),
+    name='rag_agent',
+    instruction=return_instructions_rag_agent(),
+    tools=[
+        rag_query,
+    ],)
 # Create Database_Analyst_Agent
 database_analyst_agent = LlmAgent(
     name = 'Database_Analyst_Agent',
     description = 'An agent that specializes in analyze database structure and the data within it.',
-    model='gemini-2.5-flash',
-    instruction="""You are an expert database analyst. You will help the user to understand the database structure and the data within it.
-    
-    Usa la clase DatabaseConnection para conectarte a la base de datos SQLite:
-
-    1. Conéctate a la base de datos usando el método `connect()`.
-    2. Revisa la base de datos. Busca todas las tablas usando el método `get_tables()`.
-    
-
-    3. Revisa el esquema de la tabla que te interese usando el método `get_table_schema(table_name: str)`.
-    4. Obtén todas las relaciones entre las tablas, para ello revisa las claves foráneas usando `get_foreign_keys()`.
-    5. Analiza las relaciones de la tabla que te interesa en específico y devuelve un objeto json como e.g. 
-        `{
-            "relationships": [
-                {
-                "from": "sales_details.sale_id",
-                "to": "sales.sale_id",
-                "type": "many_to_one"
-                },...
-            ]
-        }`.  
-
-
-    6. Obten sample_data de las tablas que encontraste relaciones, para ello usa `execute_query(query: str, params: Optional[Tuple] = None)` para ejecutar consultas SELECT.
-    Deberás limitar los resultados a un máximo de 5 filas por consulta. Devuelve el objeto json como e.g.
-        `{
-            "sample_data": {
-                "books": [
-                    {"book_id": 1, "title": "Book Title 1", "author": "Author 1", "published_year": 2020, "genre": "Fiction"},
-                    {"book_id": 2, "title": "Book Title 2", "author": "Author 2", "published_year": 2019, "genre": "Non-Fiction"}
-                ]
-            }
-        }`.
-
-
-    7. Desconéctate de la base de datos usando el método `disconnect()` cuando hayas terminado. O si algo falla tambien debes desconectarte.
-    Siempre responde en formato JSON.
-    """,
+    model=Gemini(model=MODEL_NAME, retry_options=retry_config),
+    instruction=return_instructions_database_agent(),
     tools=[database_analysis_tool],
 )
-
+# ================================================ Agente raíz que usa los otros agentes como herramientas
 root_agent = Agent(
-    model='gemini-2.5-flash',
+    model=Gemini(model=MODEL_NAME, retry_options=retry_config),
     name='root_agent',
-    description='A helpful assistant for user questions.',
-    instruction="""Answer user questions to the best of your knowledge
-
-    Tienes esta documentación de un enpoint:
-
-    api: /api/customer (get,post,patch)
-    body request: {"id","name"} 
-    description: api related to manage customer of the store
-    tables: none
-
-    Usa al Agent Database_Analyst_Agent para preguntar que tablas de la base de datos están relacionadas con la api /api/customer y obtener ejemplos de datos de esas tablas.
-    """,
-    tools=[AgentTool(database_analyst_agent)],
+    description='Agent that orchestrate other agents to try to test and use API endpoints based on their documentation.',
+    instruction=return_instructions_root_agent(),
+    tools=[AgentTool(database_analyst_agent), AgentTool(rag_agent)],
 )
 
 session_service = InMemorySessionService()
